@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>云购 AI 客服智能体安全靶场</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+          --text:#e6e9ef; --muted:#8b93a3; --accent:#4f8cff; --warn:#ffb454; --danger:#ff5c5c; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { background:var(--bg); color:var(--text); font-family:"Microsoft YaHei",system-ui,sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { padding:10px 20px; background:var(--panel); border-bottom:1px solid var(--border); display:flex; align-items:center; gap:14px; }
+  header h1 { font-size:16px; font-weight:600; }
+  header .badge { font-size:12px; color:var(--warn); border:1px solid var(--warn); border-radius:4px; padding:2px 8px; }
+  header .info { margin-left:auto; font-size:12px; color:var(--muted); display:flex; gap:16px; align-items:center; }
+  #sessionId { color:var(--accent); font-family:Consolas,monospace; }
+  button { background:var(--accent); color:#fff; border:none; border-radius:6px; padding:7px 14px; cursor:pointer; font-size:13px; }
+  button:hover { filter:brightness(1.1); }
+  button.secondary { background:var(--panel2); border:1px solid var(--border); color:var(--text); }
+  main { flex:1; display:flex; min-height:0; }
+  #chatPanel { flex:1; display:flex; flex-direction:column; min-width:0; }
+  #messages { flex:1; overflow-y:auto; padding:18px; display:flex; flex-direction:column; gap:12px; }
+  .msg { max-width:78%; padding:10px 14px; border-radius:10px; font-size:14px; line-height:1.6; white-space:pre-wrap; word-break:break-word; }
+  .msg.user { align-self:flex-end; background:var(--accent); color:#fff; }
+  .msg.agent { align-self:flex-start; background:var(--panel2); border:1px solid var(--border); }
+  .msg .meta { font-size:11px; color:var(--muted); margin-bottom:4px; }
+  #inputBar { display:flex; gap:10px; padding:14px 18px; border-top:1px solid var(--border); background:var(--panel); }
+  #input { flex:1; background:var(--panel2); border:1px solid var(--border); color:var(--text); border-radius:8px; padding:10px 14px; font-size:14px; outline:none; }
+  #input:focus { border-color:var(--accent); }
+  #tracePanel { width:420px; border-left:1px solid var(--border); background:var(--panel); display:flex; flex-direction:column; min-height:0; }
+  #tracePanel h3 { padding:12px 16px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--border); }
+  #trace { flex:1; overflow-y:auto; padding:12px 16px; font-size:12px; font-family:Consolas,monospace; display:flex; flex-direction:column; gap:10px; }
+  .trace-step { border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .trace-step .head { padding:6px 10px; background:var(--panel2); color:var(--accent); font-weight:600; }
+  .trace-step .head.injected { color:var(--danger); }
+  .trace-step .body { padding:8px 10px; color:var(--muted); word-break:break-all; }
+  .trace-step .body b { color:var(--text); }
+  .trace-step .result { padding:8px 10px; border-top:1px solid var(--border); color:var(--warn); word-break:break-all; }
+  #hintBar { padding:8px 16px; font-size:12px; color:var(--muted); border-top:1px solid var(--border); background:var(--panel2); }
+  @media (max-width:900px) { #tracePanel { display:none; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>☁️ 云购 AI 客服智能体</h1>
+  <span class="badge">安全靶场 v1.0</span>
+  <div class="info">
+    <span>LLM 模式: <span id="llmMode">mock</span></span>
+    <span>会话: <span id="sessionId">-</span></span>
+    <button class="secondary" id="btnNewSession">新建会话</button>
+  </div>
+</header>
+<main>
+  <div id="chatPanel">
+    <div id="messages"></div>
+    <div id="hintBar">💡 提示：回复下一条消息时，右侧将展示 agent 的完整决策轨迹（工具调用、注入触发点）。</div>
+    <div id="inputBar">
+      <input id="input" placeholder="输入消息，例如：查询我的订单 / 查一下用户 3 的资料 / 退款订单 CK20260601001 ..." autocomplete="off">
+      <button id="btnSend">发送</button>
+    </div>
+  </div>
+  <div id="tracePanel">
+    <h3>🧠 Agent 决策轨迹（安全检查观察点）</h3>
+    <div id="trace"><div class="trace-step"><div class="body">等待对话...</div></div></div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let currentSession = null;
+
+async function api(path, opts={}) {
+  const res = await fetch(path, { headers: {"Content-Type":"application/json"}, ...opts });
+  return res.json();
+}
+
+async function newSession() {
+  const data = await api("/api/session/new", { method:"POST", body: JSON.stringify({ user_id: 2 }) });
+  currentSession = data;
+  $("sessionId").textContent = data.session_id;
+  addMsg("agent", `会话已建立。\n身份：${data.username}（${data.role}）\nsession_id: ${data.session_id}\n\n你可以问我订单、商品评价、用户资料等问题。`);
+  addTrace({ head:"会话创建", body:`身份 ${data.username}(${data.role}) | session_id=${data.session_id}` });
+}
+
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent = role === "user" ? "用户" : "小云 (agent)";
+  div.appendChild(meta);
+  const body = document.createElement("div");
+  body.textContent = text;
+  div.appendChild(body);
+  $("messages").appendChild(div);
+  $("messages").scrollTop = $("messages").scrollHeight;
+}
+
+function addTrace(step) {
+  const wrap = document.createElement("div");
+  wrap.className = "trace-step";
+  const head = document.createElement("div");
+  head.className = "head" + (step.injected ? " injected" : "");
+  head.textContent = step.head || step.decision || "";
+  wrap.appendChild(head);
+  const body = document.createElement("div");
+  body.className = "body";
+  body.innerHTML = step.body || "";
+  wrap.appendChild(body);
+  if (step.result) {
+    const res = document.createElement("div");
+    res.className = "result";
+    res.textContent = "→ " + step.result;
+    wrap.appendChild(res);
+  }
+  $("trace").appendChild(wrap);
+  $("trace").scrollTop = $("trace").scrollHeight;
+}
+
+function clearTrace() {
+  $("trace").innerHTML = "";
+}
+
+async function send() {
+  const msg = $("input").value.trim();
+  if (!msg) return;
+  if (!currentSession) { await newSession(); }
+  $("input").value = "";
+  addMsg("user", msg);
+  clearTrace();
+  const data = await api("/api/chat", { method:"POST", body: JSON.stringify({ session_id: currentSession.session_id, message: msg }) });
+  if (data.error) {
+    addMsg("agent", `⚠️ ${data.error}`);
+    return;
+  }
+  addMsg("agent", data.reply);
+  (data.trace || []).forEach(step => {
+    let body = `<b>输入:</b> ${escapeHtml(step.input || "-")}<br><b>决策:</b> ${escapeHtml(step.decision || "-")}`;
+    if (step.args) body += `<br><b>参数:</b> ${escapeHtml(JSON.stringify(step.args))}`;
+    addTrace({ head: `Step ${step.step}${step.injected ? " ⚠️注入触发" : ""}`, body, result: step.result || step.reply || "" });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+}
+
+$("btnSend").onclick = send;
+$("btnNewSession").onclick = async () => { await newSession(); clearTrace(); };
+$("input").addEventListener("keydown", e => { if (e.key === "Enter") send(); });
+
+(async () => {
+  const health = await api("/api/health");
+  addMsg("agent", `欢迎来到云购 AI 客服智能体（${health.range}）。\n\n靶场为本地授权练习环境，预置了多种智能体安全漏洞。\n点击"新建会话"开始，或直接输入消息。`);
+  await newSession();
+})();
+</script>
+</body>
+</html>
